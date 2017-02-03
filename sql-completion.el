@@ -1,6 +1,12 @@
 ;;; -*- lexical-binding: t -*-
+;;; sql-completion.el --- Completion at point for use with DB2 and sql-mode.
+
+;;; Commentary:
+
+;;; Code:
 
 (require 's)
+(require 'cl-lib)
 
 (defvar db2-completions (make-hash-table :test 'equal)
   "Hashtable to hold possible completions for
@@ -15,11 +21,11 @@ yet.  Database objects that have been resolved will not
 trigger a query to the database again."
 
   ;;  Add schema and schema.table keys to the hashmap.
-  ;; (sql-get-schemas-and-tables)
+;;  (sql-get-schemas-and-tables)
 
   ;;  Go through hashmap and fill in missing values for
   ;;  nil keys.
-  ;; (sql-get-missing-completions)
+;;  (sql-get-missing-completions)
 
   ;;  Need to look back to see what schema/table list
   ;;  is before the period.
@@ -29,28 +35,41 @@ trigger a query to the database again."
 
     ;;  If the char before is a period move backward
     ;;  to get the word before the period.
-    (if (eq 46 (char-before))
+    ;; (if (eq 46 (char-before))
+    (if (looking-back "\\s-+.*\..*")
         (progn
           (save-excursion
-            (backward-word)
+            (search-backward "." nil t)
             (setq dot-prior t)
             (setq key (upcase (thing-at-point 'symbol)))))
       (setq key (upcase (thing-at-point 'symbol))))
 
+    ;;  TODO : How to get the right completion candidates when
+    ;;  the key is a table name but the keys in the hashtable
+    ;;  are schema.table?  For now a pair with the table name
+    ;;  as the key and a list of columns is added to the
+    ;;  hash table.
+    ;;  Adding the annotation of where the candidate was found
+    ;;  to each candidate may fix this issue.
+    
     (cond ((search-backward-no-move "where")
            (if dot-prior
                (setq candidates (gethash key db2-completions)) ;;  completing column name with table as the key.
              (message "Trying to complete either table or column.")))
           ((search-backward-no-move "from")      
            (if dot-prior
-               (setq candidates (gethash key db2-completions)) ;;  completing table name with schema as the key.
+               (setq candidates (gethash key db2-completions)) ;;  completing table name with schema as the key.            
              (message "Trying to complete either schema or table.")))
           ((search-backward-no-move "select")
            (if dot-prior
+               ;;  Might be a good idea to look the schema up if
+               ;;  there is no value for it yet, this would be
+               ;;  the case where the user is typing the select
+               ;;  first.
                (setq candidates (gethash key db2-completions)) ;;  completing column name with table as the key.
              (message "Trying to complete either table or column."))))
 
-    (message "Candidates: %s" candidates)
+    (message "Cand: %s\tCandidates: %s" (thing-at-point'symbol) candidates)
     
     (let ((bounds (bounds-of-thing-at-point 'symbol)))
       (when bounds
@@ -59,8 +78,14 @@ trigger a query to the database again."
               candidates
               :exclusive 'no
               :company-docsig #'identity
+              :annotation-function #'sql-completion--annotation
               :company-doc-buffer #'(lambda (cand)
-                                      (company-doc-buffer (format "'%s' was found using minsql-completion-at-point" cand))))))))
+                                      (company-doc-buffer (format "'%s' was found using sql-completion-at-point" cand))))))))
+
+(defun sql-completion--annotation (cand)
+  "Return the :note text property for the 
+candidate provided."
+  (format "   [%s]" (get-text-property 0 :note cand)))
 
 (defun search-backward-no-move (target)
   "Search backward but don't move point."
@@ -123,20 +148,24 @@ the hashtable."
 (defun sql-get-missing-completions-2 (key value)
   "Get completions for the schema.table or table
 passed if the value for the key is nil."
-  (when (eq value nil)
+  (unless value
     (if  (s-contains-p "." key)
+      ;;   (message "sql-get-columns-in-table: %s" key)
+      ;; (message "sql-get-tables-in-schema: %s" key))))
         (sql-get-columns-in-table key)
-      (sql-get-tables-in-schema key))))
+      ;; (sql-get-tables-in-schema key)
+    )))
 
-(defun sql-get-columns-in-table (schema-table database-name)
+(defun sql-get-columns-in-table (schema-table)
   "Get column listing for the table passed."
   (save-excursion
     (save-restriction
       (let* ((parts (split-string schema-table "\\."))
              (schema (first parts))
              (table (second parts))
-             (query (format "SELECT COLUMN_NAME FROM SYSIBM.COLUMNS WHERE TABLE_NAME = '%s' AND TABLE_SCHEMA = '%s' WITH UR;" table schema))
+             (query (format "SELECT COLUMN_NAME FROM SYSIBM.COLUMNS WHERE TABLE_NAME = '%s' AND TABLE_SCHEMA = '%s' WITH UR;" table schema))          
              (sqli-buffer (get-buffer (format "*SQL: %s*" database-name)))
+             (db-name database-name)
              (output-buffer "*SQL: OUTPUT*")
              (columns ())
              (c-beg)
@@ -146,72 +175,101 @@ passed if the value for the key is nil."
                       output-buffer
                       nil)
 
-        ;;  Goto output buffer to pull column names.
-        (switch-to-buffer output-buffer)
+        ;;  TODO : Could probably get away with less variables if a
+        ;;  match was done to identify lines between the heading
+        ;;  dashes and the record(s) line.
+        
+        (with-current-buffer output-buffer
+          (if (not (buffer-contains-substring "^\\s-*0 record\(s\)"))
+              (progn
+                (goto-char (point-min))
+                
+                (search-forward "---------" nil t)
 
-        (goto-char (point-min))
+                (beginning-of-line)
+                (next-line)
 
-        (search-forward "---------" nil t)
+                (setq c-beg (point))
 
-        (beginning-of-line)
-        (next-line)
+                (forward-paragraph)
 
-        (setq c-beg (point))
+                (setq c-end (1- (point)))
 
-        (forward-paragraph)
+                (narrow-to-region c-beg c-end)
+                (goto-char (point-min))
 
-        (setq c-end (1- (point)))
+                (while (search-forward-regexp "^\\(.*\\)\\s-*$" nil t)
+                  (push (sql-propertize-annotation (match-string 1) schema-table db-name) columns))
 
-        (narrow-to-region c-beg c-end)
-        (goto-char (point-min))
+                ;;  Replace the old hash that had a nil value with
+                ;;  the list of column names.
+                (puthash schema-table (reverse columns) db2-completions)
 
-        (while (search-forward-regexp "^\\(.*\\)\\s-*$" nil t)
-          (push (s-trim (match-string 1)) columns))
+                ;;  This is perhaps temporary.  When completing we need
+                ;;  only the table name but to make sure tables are
+                ;;  unique we need schema.table together.
+                (puthash table (reverse columns) db2-completions))
+            (message "No database obejct matching '%s'." parts)))))))
 
-        ;;  Replace the old hash that had a nil value with
-        ;;  the list of column names.
-        (puthash schema-table (nreverse columns) db2-completions)))))
+(defun sql-propertize-annotation (candidate schema-table database)
+  "Return a propertized text containing the 
+candidate notes."
+  (propertize (s-trim candidate) :note (concat database "." schema-table)))
 
-(defun sql-get-tables-in-schema (schema database-name)
+(defun sql-get-tables-in-schema (schema)
   "Get table names for the schema passed."
   (save-excursion
     (save-restriction
       (let* ((query (format "SELECT DISTINCT(TABLE_NAME) FROM SYSIBM.COLUMNS WHERE TABLE_SCHEMA = '%s' WITH UR;" schema))
              (sqli-buffer (get-buffer (format "*SQL: %s*" database-name)))
+             (db-name database-name)
              (output-buffer "*SQL: OUTPUT*")
              (tables ())
              (c-beg)
              (c-end))
-        (message "Starting tables-in-schema-process: %s" query)
         (sql-redirect sqli-buffer
                       query
                       output-buffer
                       nil)
         
-        (message "Done calling DB")
+        ;;  TODO : Could probably get away with less variables if a
+        ;;  match was done to identify lines between the heading
+        ;;  dashes and the record(s) line.  ^---*\\s-*\\(.*\\s-*\\)+record\(s\)
 
-        ;;  Goto output buffer to pull column names.
-        (switch-to-buffer output-buffer)
+        ;;  Goto output buffer to pull column names as long as the query
+        ;;  reported more than 0 records.
+        (with-current-buffer output-buffer
+          (if (not (buffer-contains-substring "^\\s-*0 record\(s\)"))
+              (progn
+                (goto-char (point-min))
 
-        (goto-char (point-min))
+                (search-forward "---------" nil t)
 
-        (search-forward "---------" nil t)
+                (beginning-of-line)
+                (next-line)
 
-        (beginning-of-line)
-        (next-line)
+                (setq c-beg (point))
 
-        (setq c-beg (point))
+                (forward-paragraph)
 
-        (forward-paragraph)
+                (setq c-end (1- (point)))
 
-        (setq c-end (1- (point)))
+                (narrow-to-region c-beg c-end)
+                (goto-char (point-min))
 
-        (narrow-to-region c-beg c-end)
-        (goto-char (point-min))
+                (while (search-forward-regexp "^\\(.*\\)\\s-*$" nil t)
+                  (push (sql-propertize-annotation (match-string 1) schema db-name) tables))
 
-        (while (search-forward-regexp "^\\(.*\\)\\s-*$" nil t)
-          (push (s-trim (match-string 1)) tables))
+                ;;  Replace the old hash that had a nil value with
+                ;;  the list of column names.
+                (puthash schema (nreverse tables) db2-completions))
+            (message "No database object matching '%s'." schema)))))))
 
-        ;;  Replace the old hash that had a nil value with
-        ;;  the list of column names.
-        (puthash schema (nreverse tables) db2-completions)))))
+(defun buffer-contains-substring (string)
+  "Used to tell if a given string is in the
+current buffer.  Found at:
+http://stackoverflow.com/questions/3034237/check-if-current-emacs-buffer-contains-a-string"
+  (save-excursion
+    (save-match-data
+      (goto-char (point-min))
+      (search-forward string nil t))))
