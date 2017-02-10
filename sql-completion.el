@@ -3,10 +3,25 @@
 
 ;;; Commentary:
 
+;;;  This completion at point function is for use with sql-mode and a DB2
+;;;  database.  The first part of the completion system is manual.  A function
+;;;  needs to be called to look at the current query and determine the
+;;;  schemas and tables that are part of the query.  Second a function is
+;;;  called to query DB2 and get table listings for the schemas identified and
+;;;  column listings for the tables identified.  After this is done the
+;;;  completion at point function will have the data it needs to offer
+;;;  completion candidates.  The completion function will work with company
+;;;  to offer additional details for completions.  For instance each candidate
+;;;  has where it was found: database.schema.table or database.schema.
+
 ;;; Code:
 
 (require 's)
 (require 'cl-lib)
+
+;;  Add this completion at point function to the list of functions.
+;;  Obviously this is not the real way to do it.
+(setq completion-at-point-functions 'sql-completion-at-point)
 
 (defvar db2-completions (make-hash-table :test 'equal)
   "Hashtable to hold possible completions for
@@ -21,11 +36,11 @@ yet.  Database objects that have been resolved will not
 trigger a query to the database again."
 
   ;;  Add schema and schema.table keys to the hashmap.
-;;  (sql-get-schemas-and-tables)
+  ;;  (sql-get-schemas-and-tables)
 
   ;;  Go through hashmap and fill in missing values for
   ;;  nil keys.
-;;  (sql-get-missing-completions)
+  ;;  (sql-get-missing-completions)
 
   ;;  Need to look back to see what schema/table list
   ;;  is before the period.
@@ -35,8 +50,8 @@ trigger a query to the database again."
 
     ;;  If the char before is a period move backward
     ;;  to get the word before the period.
-    ;; (if (eq 46 (char-before))
-    (if (looking-back "\\s-+.*\..*")
+    (if (eq 46 (char-before))
+    ;; (if (looking-back "\\s-+.*\..*")
         (progn
           (save-excursion
             (search-backward "." nil t)
@@ -55,11 +70,11 @@ trigger a query to the database again."
     (cond ((search-backward-no-move "where")
            (if dot-prior
                (setq candidates (gethash key db2-completions)) ;;  completing column name with table as the key.
-             (message "Trying to complete either table or column.")))
+             (setq candidates (sql-get-table-and-column-candidates))))  ;;  General completion
           ((search-backward-no-move "from")      
            (if dot-prior
-               (setq candidates (gethash key db2-completions)) ;;  completing table name with schema as the key.            
-             (message "Trying to complete either schema or table.")))
+               (setq candidates (gethash key db2-completions)) ;;  completing table name with schema as the key.
+             (setq candidates (sql-get-schema-and-table-candidates))))  ;;  General completion
           ((search-backward-no-move "select")
            (if dot-prior
                ;;  Might be a good idea to look the schema up if
@@ -67,9 +82,12 @@ trigger a query to the database again."
                ;;  the case where the user is typing the select
                ;;  first.
                (setq candidates (gethash key db2-completions)) ;;  completing column name with table as the key.
-             (message "Trying to complete either table or column."))))
+             (setq candidates (sql-get-table-and-column-candidates)))))  ;;  General completion
 
-    (message "Cand: %s\tCandidates: %s" (thing-at-point'symbol) candidates)
+    ;;  Might make sense to sort the candidates based on schema or schema.table
+    ;;  where the candidate was found so that they appear together in the completion
+    ;;  list.  Need to pass :sorted t to company.
+    (message "Candidates: %s" candidates)
     
     (let ((bounds (bounds-of-thing-at-point 'symbol)))
       (when bounds
@@ -85,7 +103,7 @@ trigger a query to the database again."
 (defun sql-completion--annotation (cand)
   "Return the :note text property for the 
 candidate provided."
-  (format "   [%s]" (get-text-property 0 :note cand)))
+  (format "[%s]" (get-text-property 0 :note cand)))
 
 (defun search-backward-no-move (target)
   "Search backward but don't move point."
@@ -143,18 +161,38 @@ the db2-completion hashmap then add them."
   "Get missing completions for values in 
 the hashtable."
   (interactive)
-  (maphash #'sql-get-missing-completions-2 db2-completions))
+  (maphash #'(lambda (key value)
+               (unless value
+                 (if (s-contains-p "." key)
+                     (sql-get-columns-in-table key)
+                   (sql-get-tables-in-schema key))))
+           db2-completions))
 
-(defun sql-get-missing-completions-2 (key value)
-  "Get completions for the schema.table or table
-passed if the value for the key is nil."
-  (unless value
-    (if  (s-contains-p "." key)
-      ;;   (message "sql-get-columns-in-table: %s" key)
-      ;; (message "sql-get-tables-in-schema: %s" key))))
-        (sql-get-columns-in-table key)
-      ;; (sql-get-tables-in-schema key)
-    )))
+(defun sql-get-table-and-column-candidates ()
+  "Get a list of candidates that consists of only
+table and column names."
+  (message "Getting table and column candidates.")
+  (let ((cands ()))
+    (maphash #'(lambda (key value)
+                (when (s-contains-p "." key)
+                    (progn
+                      (push (second (split-string key "\\.")) cands)
+                      (dolist (item value)
+                        (push item cands)))))
+             db2-completions)
+    cands))
+
+(defun sql-get-schema-and-table-candidates ()
+  "Get a list of candidates that consists of only
+schema and table names."
+    (message "Getting schema and table candidates.")
+  (let ((cands ()))
+    (maphash #'(lambda (key value)
+                 (if (s-contains-p "." key)
+                     (push (second split-string key "\\.") cands)
+                   (push key cands)))
+             db2-completions)
+    cands))
 
 (defun sql-get-columns-in-table (schema-table)
   "Get column listing for the table passed."
@@ -164,13 +202,11 @@ passed if the value for the key is nil."
              (schema (first parts))
              (table (second parts))
              (query (format "SELECT COLUMN_NAME FROM SYSIBM.COLUMNS WHERE TABLE_NAME = '%s' AND TABLE_SCHEMA = '%s' WITH UR;" table schema))          
-             (sqli-buffer (get-buffer (format "*SQL: %s*" database-name)))
-             (db-name database-name)
              (output-buffer "*SQL: OUTPUT*")
              (columns ())
              (c-beg)
              (c-end))
-        (sql-redirect sqli-buffer
+        (sql-redirect (get-buffer sql-buffer)
                       query
                       output-buffer
                       nil)
@@ -180,7 +216,7 @@ passed if the value for the key is nil."
         ;;  dashes and the record(s) line.
         
         (with-current-buffer output-buffer
-          (if (not (buffer-contains-substring "^\\s-*0 record\(s\)"))
+          (if (not (buffer-contains-substring "^\\s-*0 record(s)"))
               (progn
                 (goto-char (point-min))
                 
@@ -199,7 +235,7 @@ passed if the value for the key is nil."
                 (goto-char (point-min))
 
                 (while (search-forward-regexp "^\\(.*\\)\\s-*$" nil t)
-                  (push (sql-propertize-annotation (match-string 1) schema-table db-name) columns))
+                  (push (sql-propertize-annotation (match-string 1) schema-table sql-database) columns))
 
                 ;;  Replace the old hash that had a nil value with
                 ;;  the list of column names.
@@ -209,7 +245,7 @@ passed if the value for the key is nil."
                 ;;  only the table name but to make sure tables are
                 ;;  unique we need schema.table together.
                 (puthash table (reverse columns) db2-completions))
-            (message "No database obejct matching '%s'." parts)))))))
+            (message "No database obejct matching '%s'." schema-table)))))))
 
 (defun sql-propertize-annotation (candidate schema-table database)
   "Return a propertized text containing the 
@@ -221,13 +257,11 @@ candidate notes."
   (save-excursion
     (save-restriction
       (let* ((query (format "SELECT DISTINCT(TABLE_NAME) FROM SYSIBM.COLUMNS WHERE TABLE_SCHEMA = '%s' WITH UR;" schema))
-             (sqli-buffer (get-buffer (format "*SQL: %s*" database-name)))
-             (db-name database-name)
              (output-buffer "*SQL: OUTPUT*")
              (tables ())
              (c-beg)
              (c-end))
-        (sql-redirect sqli-buffer
+        (sql-redirect (get-buffer sql-buffer)
                       query
                       output-buffer
                       nil)
@@ -239,7 +273,7 @@ candidate notes."
         ;;  Goto output buffer to pull column names as long as the query
         ;;  reported more than 0 records.
         (with-current-buffer output-buffer
-          (if (not (buffer-contains-substring "^\\s-*0 record\(s\)"))
+          (if (not (buffer-contains-substring "^\\s-*0 record(s)"))
               (progn
                 (goto-char (point-min))
 
@@ -258,7 +292,7 @@ candidate notes."
                 (goto-char (point-min))
 
                 (while (search-forward-regexp "^\\(.*\\)\\s-*$" nil t)
-                  (push (sql-propertize-annotation (match-string 1) schema db-name) tables))
+                  (push (sql-propertize-annotation (match-string 1) schema sql-database) tables))
 
                 ;;  Replace the old hash that had a nil value with
                 ;;  the list of column names.
