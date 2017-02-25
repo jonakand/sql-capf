@@ -19,9 +19,32 @@
 (require 's)
 (require 'cl-lib)
 
+;;------------------------------------------------------------------------------
+;;  Testing setup (begin)
+;;------------------------------------------------------------------------------
+
 ;;  Add this completion at point function to the list of functions.
 ;;  Obviously this is not the real way to do it.
-(setq completion-at-point-functions 'sql-completion-at-point)
+(add-hook 'completion-at-point-functions 'sql-completion-at-point)
+
+(defun test ()
+  ""
+  (interactive)
+  (sql-get-schema-or-table "SUSPEND"))
+
+(defun test2 ()
+  ""
+  (interactive)
+  (maphash #'(lambda (key value)
+               (message "Key: %s\tValue: %s" key value))
+           db2-completions))
+
+(setq db2-completions (make-hash-table :test 'equal))
+db2-completions
+
+;;------------------------------------------------------------------------------
+;;  Testing setup (end)
+;;------------------------------------------------------------------------------
 
 (defvar db2-completions (make-hash-table :test 'equal)
   "Hashtable to hold possible completions for
@@ -35,19 +58,25 @@ tables that have not been resolved against the database
 yet.  Database objects that have been resolved will not
 trigger a query to the database again."
 
-  ;;  Add schema and schema.table keys to the hashmap.
-  ;;  (sql-get-schemas-and-tables)
+  ;;  TODO:  Isolate only the current query.
+  
+  ;;  TODO:  Inspect current query and look for things 
+  ;;  that may need to be looked up in the database.
+  ;;  This could be slow if there are a number of queries
+  ;;  that need to be run.
 
-  ;;  Go through hashmap and fill in missing values for
-  ;;  nil keys.
-  ;;  (sql-get-missing-completions)
+  ;;  Steps:
+  ;;  1.  Find SELECT queries to run.
+  ;;  2.  Find FOR queries to run.
+  ;;  3.  Find where queries to run.
+  ;;  4.  Call function to query for a list of targets.
 
   ;;  Need to look back to see what schema/table list
   ;;  is before the period.
   (let ((key)
         (dot-prior nil)
         (candidates))
-
+    
     ;;  If the char before is a period move backward
     ;;  to get the word before the period.
     (if (eq 46 (char-before))
@@ -59,16 +88,19 @@ trigger a query to the database again."
             (setq key (upcase (thing-at-point 'symbol)))))
       (setq key (upcase (thing-at-point 'symbol))))
 
-    ;;  TODO : How to get the right completion candidates when
-    ;;  the key is a table name but the keys in the hashtable
-    ;;  are schema.table?  For now a pair with the table name
-    ;;  as the key and a list of columns is added to the
-    ;;  hash table.
-    ;;  Adding the annotation of where the candidate was found
-    ;;  to each candidate may fix this issue.
-    
-    (cond ((search-backward-no-move "where")
-           (if dot-prior
+    (let ((query-begin)
+          (query-end (point)))
+      (save-excursion
+        (save-restriction
+          (backward-paragraph)
+          (setq query-begin (point))
+
+          (narrow-to-region query-begin query-end)
+
+          (goto-char (point-max))
+                     
+          (cond ((search-backward-no-move "where")
+                 (if dot-prior
                (setq candidates (gethash key db2-completions)) ;;  completing column name with table as the key.
              (setq candidates (sql-get-table-and-column-candidates))))  ;;  General completion
           ((search-backward-no-move "from")      
@@ -77,12 +109,8 @@ trigger a query to the database again."
              (setq candidates (sql-get-schema-and-table-candidates))))  ;;  General completion
           ((search-backward-no-move "select")
            (if dot-prior
-               ;;  Might be a good idea to look the schema up if
-               ;;  there is no value for it yet, this would be
-               ;;  the case where the user is typing the select
-               ;;  first.
                (setq candidates (gethash key db2-completions)) ;;  completing column name with table as the key.
-             (setq candidates (sql-get-table-and-column-candidates)))))  ;;  General completion
+             (setq candidates (sql-get-table-and-column-candidates))))))))  ;;  General completion
 
     ;;  Might make sense to sort the candidates based on schema or schema.table
     ;;  where the candidate was found so that they appear together in the completion
@@ -94,16 +122,20 @@ trigger a query to the database again."
         (list (car bounds)
               (cdr bounds)
               candidates
-              :exclusive 'no
+              :exclusive 'yes
               :company-docsig #'identity
               :annotation-function #'sql-completion--annotation
-              :company-doc-buffer #'(lambda (cand)
-                                      (company-doc-buffer (format "'%s' was found using sql-completion-at-point" cand))))))))
+              :company-doc-buffer #'sql-completion--metadata)))))
 
 (defun sql-completion--annotation (cand)
   "Return the :note text property for the 
 candidate provided."
   (format "[%s]" (get-text-property 0 :note cand)))
+
+(defun sql-completion--metadata (cand)
+  "Function to put the candidate :meta text
+property into the doc buffer used by company."
+  (company-doc-buffer (get-text-property 0 :meta cand)))
 
 (defun search-backward-no-move (target)
   "Search backward but don't move point."
@@ -141,37 +173,38 @@ pairs in the FROM clause of a SELECT statement."
         ;;  the schema.table pairs.       
         (split-string (upcase (buffer-substring-no-properties f-begin f-end)) "\\s-*,\\s-*")))))
 
-(defun sql-get-schemas-and-tables ()
-  "Get the schema.table pairs part of an
-SELECT statement and if they are missing from
-the db2-completion hashmap then add them."
+;; (defun sql-get-schemas-and-tables ()
+;;   "Get the schema.table pairs part of an
+;; SELECT statement and if they are missing from
+;; the db2-completion hashmap then add them."
+;;   (interactive)
+;;   (let ((schema-table-list (sql-get-from-clause)))
+;;     (cl-loop for item in schema-table-list do
+;;              (let* ((parts (split-string item "\\."))
+;;                     (schema (s-trim (first parts)))
+;;                     (pair (s-trim item)))
+;;                (when (not (gethash schema db2-completions))
+;;                  (puthash schema nil db2-completions))
+
+;;                (when (not (gethash pair db2-completions))
+;;                  (puthash pair nil db2-completions))))))
+
+(defun sql-get-from-completions-from-db ()
+  "Get completion candidates for the schemas/tables found
+in the FROM clause of the current query."
   (interactive)
-  (let ((schema-table-list (sql-get-from-clause)))
+  (let* ((schema-table-list (sql-get-from-clause)))
     (cl-loop for item in schema-table-list do
-             (let* ((parts (split-string item "\\."))
-                    (schema (s-trim (first parts)))
-                    (pair (s-trim item)))
-               (when (not (gethash schema db2-completions))
-                 (puthash schema nil db2-completions))
-
-               (when (not (gethash pair db2-completions))
-                 (puthash pair nil db2-completions))))))
-
-(defun sql-get-missing-completions ()
-  "Get missing completions for values in 
-the hashtable."
-  (interactive)
-  (maphash #'(lambda (key value)
-               (unless value
-                 (if (s-contains-p "." key)
-                     (sql-get-columns-in-table key)
-                   (sql-get-tables-in-schema key))))
-           db2-completions))
+             (let* ((p (split-string item "\\."))
+                    (schema (s-trim (first p)))
+                    (table (s-trim (second p))))
+               (if (table)
+                   (sql-get-schema-or-table table)
+                 (sql-get-schema-or-table schema))))))
 
 (defun sql-get-table-and-column-candidates ()
   "Get a list of candidates that consists of only
 table and column names."
-  (message "Getting table and column candidates.")
   (let ((cands ()))
     (maphash #'(lambda (key value)
                 (when (s-contains-p "." key)
@@ -194,36 +227,35 @@ schema and table names."
              db2-completions)
     cands))
 
-(defun sql-get-columns-in-table (schema-table)
-  "Get column listing for the table passed."
+(defun sql-get-schema-or-table (target)
+  "Get schema, table, or columns matching the 
+target string passed.
+
+The input string is a schema name, table name,
+or column name \(partial or full\) to search 
+the database for."
   (save-excursion
     (save-restriction
-      (let* ((parts (split-string schema-table "\\."))
-             (schema (first parts))
-             (table (second parts))
-             (query (format "SELECT COLUMN_NAME FROM SYSIBM.COLUMNS WHERE TABLE_NAME = '%s' AND TABLE_SCHEMA = '%s' WITH UR;" table schema))          
+      (let* ((query (format "SELECT TABSCHEMA || '|' || TABNAME || '|' || COLNAME || '|' || COLNO || '|' || COALESCE(REMARKS, 'NONE') FROM SYSCAT.COLUMNS WHERE TABNAME LIKE '%s%%' OR TABSCHEMA LIKE '%s%%' OR COLNAME LIKE '%s%%' ORDER BY TABSCHEMA, TABNAME, COLNO WITH UR;" target target target))
              (output-buffer "*SQL: OUTPUT*")
-             (columns ())
+             (objects ())
              (c-beg)
              (c-end))
         (sql-redirect (get-buffer sql-buffer)
                       query
                       output-buffer
                       nil)
-
-        ;;  TODO : Could probably get away with less variables if a
-        ;;  match was done to identify lines between the heading
-        ;;  dashes and the record(s) line.
         
         (with-current-buffer output-buffer
+          (widen)
           (if (not (buffer-contains-substring "^\\s-*0 record(s)"))
               (progn
                 (goto-char (point-min))
                 
                 (search-forward "---------" nil t)
 
-                (beginning-of-line)
                 (next-line)
+                (beginning-of-line)
 
                 (setq c-beg (point))
 
@@ -234,70 +266,65 @@ schema and table names."
                 (narrow-to-region c-beg c-end)
                 (goto-char (point-min))
 
-                (while (search-forward-regexp "^\\(.*\\)\\s-*$" nil t)
-                  (push (sql-propertize-annotation (match-string 1) schema-table sql-database) columns))
+                ;;  Loop over narrowed region and process each result.
+                ;;  Add each result to the hashmap of completions if
+                ;;  it doesn't exist yet.
+                (cl-loop until (eobp) do
+                         (progn
+                           (let* ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+                                  (parts (split-string line "|" split-string-default-separators))
+                                  (schema (s-trim (nth 0 parts)))
+                                  (table (s-trim (nth 1 parts)))
+                                  (column (s-trim (nth 2 parts)))
+                                  (type (s-trim (nth 3 parts)))
+                                  (remarks (s-trim (nth 4 parts)))
+                                  (schema-table (concat schema "." table)))
 
-                ;;  Replace the old hash that had a nil value with
-                ;;  the list of column names.
-                (puthash schema-table (reverse columns) db2-completions)
-
-                ;;  This is perhaps temporary.  When completing we need
-                ;;  only the table name but to make sure tables are
-                ;;  unique we need schema.table together.
-                (puthash table (reverse columns) db2-completions))
-            (message "No database obejct matching '%s'." schema-table)))))))
+                             ;;  Conditions:
+                             ;;  1.  Schema hash doesn't exist:
+                             ;;      Insert table into schema value list
+                             ;;      Insert column into schema.table value list
+                             ;;  2.  Schema hash exsist but table is not in value list:
+                             ;;      Insert table into schema value list
+                             ;;  3.  Schema-table hash exists but doesn't contain the column in the value list:
+                             ;;      Insert column into schema.table value list
+                             (when (not (gethash schema db2-completions))
+                                 (progn
+                                   (puthash schema
+                                            (list (sql-propertize-annotation table schema-table sql-database))
+                                            db2-completions)
+                                   (puthash schema-table
+                                            (list (sql-propertize-metadata column schema-table sql-database schema table type remarks))
+                                            db2-completions)))
+                             
+                             (when (not (-contains-p (gethash schema db2-completions) table))
+                               (let ((tables (gethash schema db2-completions)))
+                                 (push (sql-propertize-annotation table schema-table sql-database) tables)
+                                 (puthash schema
+                                          tables
+                                          db2-completions)))
+                             
+                             (when (not (-contains-p (gethash schema-table db2-completions) column))
+                               (let ((cols (gethash schema-table db2-completions)))
+                                 (push (sql-propertize-metadata column schema-table sql-database schema table type remarks) cols)
+                                 (puthash schema-table cols db2-completions))))
+                           (forward-line 1))))))))))
 
 (defun sql-propertize-annotation (candidate schema-table database)
   "Return a propertized text containing the 
 candidate notes."
-  (propertize (s-trim candidate) :note (concat database "." schema-table)))
+  (propertize candidate :note (concat database "." schema-table)))
 
-(defun sql-get-tables-in-schema (schema)
-  "Get table names for the schema passed."
-  (save-excursion
-    (save-restriction
-      (let* ((query (format "SELECT DISTINCT(TABLE_NAME) FROM SYSIBM.COLUMNS WHERE TABLE_SCHEMA = '%s' WITH UR;" schema))
-             (output-buffer "*SQL: OUTPUT*")
-             (tables ())
-             (c-beg)
-             (c-end))
-        (sql-redirect (get-buffer sql-buffer)
-                      query
-                      output-buffer
-                      nil)
-        
-        ;;  TODO : Could probably get away with less variables if a
-        ;;  match was done to identify lines between the heading
-        ;;  dashes and the record(s) line.  ^---*\\s-*\\(.*\\s-*\\)+record\(s\)
-
-        ;;  Goto output buffer to pull column names as long as the query
-        ;;  reported more than 0 records.
-        (with-current-buffer output-buffer
-          (if (not (buffer-contains-substring "^\\s-*0 record(s)"))
-              (progn
-                (goto-char (point-min))
-
-                (search-forward "---------" nil t)
-
-                (beginning-of-line)
-                (next-line)
-
-                (setq c-beg (point))
-
-                (forward-paragraph)
-
-                (setq c-end (1- (point)))
-
-                (narrow-to-region c-beg c-end)
-                (goto-char (point-min))
-
-                (while (search-forward-regexp "^\\(.*\\)\\s-*$" nil t)
-                  (push (sql-propertize-annotation (match-string 1) schema sql-database) tables))
-
-                ;;  Replace the old hash that had a nil value with
-                ;;  the list of column names.
-                (puthash schema (nreverse tables) db2-completions))
-            (message "No database object matching '%s'." schema)))))))
+(defun sql-propertize-metadata (candidate schema-table database schema table type remarks)
+  "Return a propertized text containing the 
+candidate meta data."
+  (propertize candidate
+              :note (concat database "." schema-table)
+              :meta (concat "Database:  " database "\n\n"
+                            "Schema:    " schema   "\n\n"
+                            "Object:    " table    "\n\n"
+                            "Type:      " type     "\n\n"
+                            "Remarks:   " remarks)))
 
 (defun buffer-contains-substring (string)
   "Used to tell if a given string is in the
