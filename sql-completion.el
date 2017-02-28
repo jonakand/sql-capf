@@ -41,9 +41,25 @@
 ;;  `completion-at-point-functions' list as below.
 ;;
 ;;  (add-hook 'completion-at-point-functions 'sql-completion-at-point)
+;;
+;;  Setting `completion-ignore-case' to t should also be done.  The
+;;  completion candidates are stored internally using all caps.
+;;
+;;  (setq completion-ignore-case t)
+;;
+;;  The `sql-completion-min-target-size' property can be used to restrict
+;;  the number of queries sent to the databse.  Any potential databse
+;;  object that has a length less than this variable will be skipped and
+;;  will not trigger a query to the database.
 
 ;;; Todo:
-;;
+;;  - Currently two lists are kept one to hold the queries that have already
+;;    been sent to the database to be resolved and another (hashtable) to
+;;    hold the resolved database objects.  It would be nice to have one list.
+;;  - It would be nice to have the candidates grouped by their location in
+;;    the database.
+;;  - The annotations for schemas are not working correctly.  They are showing
+;;    nil instead of the remarks that were found.
 
 ;;; Code:
 
@@ -162,58 +178,18 @@ candidate meta data."
                             "Type:      " type     "\n\n"
                             "Remarks:   " remarks)))
 
-;; (defun sql-get-from-clause ()
-;;   "Get a list containing the schema.table
-;; pairs in the FROM clause of a SELECT statement."
-;;   (interactive)
-;;   (save-excursion
-;;     (save-restriction
-
-;;       ;;  TODO : Narrow the buffer to be only the current
-;;       ;;  paragraph/query.
-      
-;;       (let ((for-begin)
-;;             (for-end))
-;;         (goto-char (point-min))
-
-;;         ;;  Find start of FROM clause
-;;         (search-forward "from ")
-;;         (setq f-begin (point))
-
-;;         ;;  Find start of WHERE clause or use
-;;         ;;  the end of the buffer.
-;;         (if (search-forward "where")
-;;             (progn
-;;               (backward-word)
-;;               (setq f-end (point)))
-;;           (setq f-end (point-max)))
-
-;;         ;;  Substring the buffer to pull only
-;;         ;;  the schema.table pairs.       
-;;         (split-string (upcase (buffer-substring-no-properties f-begin f-end)) "\\s-*,\\s-*")))))
-
-;; (defun sql-get-from-completions-from-db ()
-;;   "Get completion candidates for the schemas/tables found
-;; in the FROM clause of the current query."
-;;   (interactive)
-;;   (let* ((schema-table-list (sql-get-from-clause)))
-;;     (cl-loop for item in schema-table-list do
-;;              (let* ((p (split-string item "\\."))
-;;                     (schema (s-trim (first p)))
-;;                     (table (s-trim (second p))))
-;;                (if (table)
-;;                    (sql-get-database-objects table)
-;;                  (sql-get-database-objects schema))))))
-
 (defun sql-get-table-and-column-candidates ()
   "Get a list of candidates that consists of only
 table and column names."
+  (when sql-completion-debugging
+    (message "Getting list of table or column candidates."))
+    
   (let ((cands ()))
     (maphash #'(lambda (key value)
                  (when (s-contains-p "." key)
                    (progn
                      (push (second (split-string key "\\.")) cands)
-                     (cl-loop for item in value
+                     (cl-loop for item in value do
                               (push item cands)))))
              sql-completions)
     cands))
