@@ -109,20 +109,24 @@ trigger a query to the database again."
         ;;  could be slow if there are a number of queries
         ;;  that need to be run.  To help mitigate slowness
         ;;  only look-up objects that haven't been looked up
-        ;;  already.
+        ;;  already and that are longer than four characters.
         (let ((targets (sql-find-query-tokens)))
           (cl-loop for target in targets do
-                   (when (not (and (-contains-p target sql-query-targets)
-                                   (gethash target sql-completions)))
-                     (sql-get-database-objects (s-upcase target))
-                     (push (s-upcase target) sql-query-targets))))
+                   (let ((trg (s-upcase target)))
+                     (if (and (> (length trg) sql-completion-min-target-size)
+                              (not (-contains-p sql-query-targets trg))
+                              (not (gethash trg sql-completions)))
+                         (progn
+                           (sql-get-database-objects trg))
+                       (when sql-completion-debugging
+                         (message "Skipping candidate lookup: %s" trg))))))
 
         ;;  Need to look back to see what schema/table list
         ;;  is before the period.
         (let ((key)
               (dot-prior nil)
               (candidates))
-    
+          
           ;;  If the char before is a period move backward
           ;;  to get the word before the period.
           (if (eq 46 (char-before))
@@ -135,7 +139,7 @@ trigger a query to the database again."
             (setq key (s-upcase (thing-at-point 'symbol))))
 
           (goto-char (point-max))
-                     
+          
           (cond ((sql-search-backward-no-move "where")
                  (if dot-prior
                      (setq candidates (gethash key sql-completions)) ;;  completing column name with table as the key.
@@ -147,22 +151,23 @@ trigger a query to the database again."
                 ((sql-search-backward-no-move "select")
                  (if dot-prior
                      (setq candidates (gethash key sql-completions)) ;;  completing column name with table as the key.
-                   (setq candidates (sql-get-table-and-column-candidates)))))))))  ;;  General completion
+                   (setq candidates (sql-get-table-and-column-candidates)))))  ;;  General completion
 
-  ;;  Candidates have been established, print them for
-  ;;  debudding and then finish completion by returning
-  ;;  the values that capf expects.
-  (message "Candidates: %s" candidates)
-    
-  (let ((bounds (bounds-of-thing-at-point 'symbol)))
-    (when bounds
-      (list (car bounds)
-            (cdr bounds)
-            candidates
-            :exclusive 'yes
-            :company-docsig #'identity
-            :annotation-function #'sql-completion--annotation
-            :company-doc-buffer #'sql-completion--metadata))))
+          ;;  Candidates have been established, print them for
+          ;;  debudding and then finish completion by returning
+          ;;  the values that capf expects.
+          (when sql-completion-debugging
+            (message "Candidates: %s" candidates))
+          
+          (let ((bounds (bounds-of-thing-at-point 'symbol)))
+            (when bounds
+              (list (car bounds)
+                    (cdr bounds)
+                    candidates
+                    :exclusive 'no
+                    :company-docsig #'identity
+                    :annotation-function #'sql-completion--annotation
+                    :company-doc-buffer #'sql-completion--metadata))))))))
 
 (defun sql-completion--annotation (cand)
   "Return the :note text property for the 
@@ -267,7 +272,7 @@ the database for."
                 ;;  Add each result to the hashmap of completions if
                 ;;  it doesn't exist yet.
                 (cl-loop until (eobp) do
-                         (progn
+                         (progn                           
                            (let* ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
                                   (parts (split-string line "|" split-string-default-separators))
                                   (schema (s-trim (nth 0 parts)))
@@ -307,7 +312,18 @@ the database for."
                              (when (not (-contains-p (gethash schema-table sql-completions) column))
                                (let ((cols (gethash schema-table sql-completions)))
                                  (push (sql-propertize-metadata column schema-table sql-database schema table type remarks) cols)
-                                 (puthash schema-table cols sql-completions))))
+                                 (puthash schema-table cols sql-completions)))
+
+                             ;;  This should be fixed.  Currently push the retrieved
+                             ;;  values into the list of queries that have been sent
+                             ;;  to the database so that it will not be sent again a
+                             ;;  second time.
+                             (when (not (-contains-p sql-query-targets schema))
+                               (push schema sql-query-targets))
+                             (when (not (-contains-p sql-query-targets table))
+                               (push table sql-query-targets))
+                             (when (not (-contains-p sql-query-targets column))
+                               (push column sql-query-targets)))
                            (forward-line 1))))))))))
 
 (defun sql-find-query-tokens ()
@@ -332,10 +348,9 @@ returned."
                  (backward-word))
                 (t
                  (setq m1 mt)))
-          (message "Match one: %s" m1)
           (cl-loop for item in (split-string m1 "[,\. ]") do
-                   (when (not (-contains-p tokens item))
-                     (push item tokens)))))
+                   (when (not (-contains-p tokens (s-trim item)))
+                     (push (s-trim item) tokens)))))
       (when (and m1 (search-forward-regexp "from\\([^\\0]*where\\)\\|from\\([^\\0]*\\)" nil t))
         (let* ((m (or (match-string 1) (match-string 2)))
               (mt (s-trim m)))
