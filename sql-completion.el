@@ -67,13 +67,22 @@
 (require 'cl-lib)
 
 (defvar sql-completions (make-hash-table :test 'equal)
-  "Hashtable to hold possible completions for
+  "Hashtable to hold resolved completions for
 DB2 objects.")
 
 (defvar sql-query-targets ()
-  "List of targets that have been searched for
-this list is maintained so that repeated queries
-for the same database object is avoided.")
+  "List of targets that have been searched for.
+This list is maintained so that repeated queries
+for the same database object are avoided.")
+
+(defvar sql-completion-min-target-size 4
+  "The minimum size of a database object to query
+for.  If the potential database object has a name
+less than this length it will not be sent to the
+database to be looked up.")
+
+(defvar sql-completion-debugging nil
+  "Enables debugging messages.")
 
 (defun sql-completion-at-point ()
   (interactive)
@@ -83,6 +92,9 @@ tables that have not been resolved against the database
 yet.  Database objects that have been resolved will not
 trigger a query to the database again."
 
+  (when sql-completion-debugging
+    (message "Starting completion function."))
+  
   (let ((query-begin)
         (query-end (point)))
     (save-excursion
@@ -197,11 +209,13 @@ table and column names."
 (defun sql-get-schema-and-table-candidates ()
   "Get a list of candidates that consists of only
 schema and table names."
-  (message "Getting schema and table candidates.")
+  (when sql-completion-debugging
+    (message "Getting list of schema or table candidates."))
+
   (let ((cands ()))
     (maphash #'(lambda (key value)
                  (if (s-contains-p "." key)
-                     (push (second split-string key "\\.") cands)
+                     (push (second (split-string key "\\.")) cands)
                    (push key cands)))
              sql-completions)
     cands))
@@ -220,6 +234,10 @@ the database for."
              (objects ())
              (c-beg)
              (c-end))
+
+        (when sql-completion-debugging
+          (message "Sending query: %s" query))
+        
         (sql-redirect (get-buffer sql-buffer)
                       query
                       output-buffer
@@ -259,6 +277,9 @@ the database for."
                                   (remarks (s-trim (nth 4 parts)))
                                   (schema-table (concat schema "." table)))
 
+                             (when sql-completion-debugging
+                                 (message "Processing line: %s" (s-trim line)))
+
                              ;;  Conditions:
                              ;;  1.  Schema hash doesn't exist:
                              ;;      Insert table into schema value list
@@ -295,6 +316,9 @@ that should be queried for in the database.
 Tokens include schema names, table names, and
 column names.  A list of these tokens is
 returned."
+  (when sql-completion-debugging
+    (message "Starting sql-find-query-tokens."))
+    
   (save-excursion
     (let ((m1)
           (m2)
@@ -320,17 +344,19 @@ returned."
                  (backward-word))
                 (t
                  (setq m2 mt)))
-          (message "Match two: %s" m2)
           (cl-loop for item in (split-string m2 "[,\. ]") do
-                   (when (not (-contains-p tokens item))
-                     (push item tokens)))))
+                   (when (not (-contains-p tokens (s-trim item)))
+                     (push (s-trim item) tokens)))))
       (when (search-forward-regexp "where\\([^\\0]*\\)" nil t)
        (let ((mt (s-trim (match-string 1))))
           (setq m3 (replace-regexp-in-string "\n" "" mt))
-          (message "Match three: %s" m3)
           (cl-loop for item in (split-string m3 "[,\. ]") do
                    (when (not (-contains-p tokens item))
                      (push item tokens)))))
+
+      (when sql-completion-debugging
+        (message "Found potential objects to lookup: %s" tokens))
+      
       tokens)))
 
 (defun sql-buffer-contains-substring (string)
