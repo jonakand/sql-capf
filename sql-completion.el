@@ -67,7 +67,7 @@
 (require 'cl-lib)
 
 (defvar sql-completions (make-hash-table :test 'equal)
-  "Hashtable to hold resolved completions for
+  "Hashtable to hold resolved completions.
 DB2 objects.")
 
 (defvar sql-query-targets ()
@@ -76,8 +76,8 @@ This list is maintained so that repeated queries
 for the same database object are avoided.")
 
 (defvar sql-completion-min-target-size 4
-  "The minimum size of a database object to query
-for.  If the potential database object has a name
+  "The minimum size of a database object to queryi for.
+If the potential database object has a name
 less than this length it will not be sent to the
 database to be looked up.")
 
@@ -85,25 +85,34 @@ database to be looked up.")
   "Enables debugging messages.")
 
 (defun sql-completion-at-point ()
-  (interactive)
   "Provide completion candidates for the thing at point.
-The current query is inspected to find schemas and 
+
+The current query is inspected to find schemas and
 tables that have not been resolved against the database
 yet.  Database objects that have been resolved will not
 trigger a query to the database again."
-
+  (interactive)
+  
   (when sql-completion-debugging
     (message "Starting completion function."))
   
-  (let ((query-begin)
-        (query-end (point)))
+  (let ((point-curr (point))
+        (query-begin)
+        (query-end))
     (save-excursion
       (save-restriction
         (backward-paragraph)
         (setq query-begin (point))
 
+        (forward-paragraph)
+        (setq query-end (point))
+
         (narrow-to-region query-begin query-end)
 
+        ;;  Put point back where it was before the query was
+        ;;  isolated.
+        (goto-char point-curr)
+        
         ;;  Inspect current query and look for things that
         ;;  may need to be looked up in the database.  This
         ;;  could be slow if there are a number of queries
@@ -144,7 +153,7 @@ trigger a query to the database again."
                  (if dot-prior
                      (setq candidates (gethash key sql-completions)) ;;  completing column name with table as the key.
                    (setq candidates (sql-get-table-and-column-candidates))))  ;;  General completion
-                ((sql-search-backward-no-move "from")      
+                ((sql-search-backward-no-move "from")
                  (if dot-prior
                      (setq candidates (gethash key sql-completions)) ;;  completing table name with schema as the key.
                    (setq candidates (sql-get-schema-and-table-candidates))))  ;;  General completion
@@ -170,23 +179,35 @@ trigger a query to the database again."
                     :company-doc-buffer #'sql-completion--metadata))))))))
 
 (defun sql-completion--annotation (cand)
-  "Return the :note text property for the 
-candidate provided."
+  "Return the :note text property for the candidate provided.
+
+CAND is the candidate to return the annotation for."
   (format "[%s]" (get-text-property 0 :note cand)))
 
 (defun sql-completion--metadata (cand)
-  "Function to put the candidate :meta text
-property into the doc buffer used by company."
+  "Return the :meta text property for the candidate provided.
+
+CAND is the candidate to return the metadata for."
   (company-doc-buffer (get-text-property 0 :meta cand)))
 
 (defun sql-propertize-annotation (candidate schema-table database)
-  "Return a propertized text containing the 
-candidate notes."
+  "Return a propertized text containing the candidate notes.
+
+CANDIDATE is the candidate to add the text property to.
+SCHEMA-TABLE is the schema.table that the candidate was found.
+DATABASE is the database that the candidate was found."
   (propertize candidate :note (concat database "." schema-table)))
 
 (defun sql-propertize-metadata (candidate schema-table database schema table type remarks)
-  "Return a propertized text containing the 
-candidate meta data."
+  "Return a propertized text containing the candidate meta data.
+
+CANDIDATE is the candidate to add the text property to.
+SCHEMA-TABLE is the schema and table that the candidate was found.
+DATABASE is the database that the candidate was found.
+SCHEMA is the schema that the candidate was found.
+TABLE is the table that the candidate was found.
+TYPE is the type of database object that the candidate is.
+REMARKS is the remarks that were entered in the database for the candidate."
   (propertize candidate
               :note (concat database "." schema-table)
               :meta (concat "Database:  " database "\n\n"
@@ -196,8 +217,7 @@ candidate meta data."
                             "Remarks:   " remarks)))
 
 (defun sql-get-table-and-column-candidates ()
-  "Get a list of candidates that consists of only
-table and column names."
+  "Get a list of candidates that consists of only table and column names."
   (when sql-completion-debugging
     (message "Getting list of table or column candidates."))
     
@@ -212,8 +232,7 @@ table and column names."
     cands))
 
 (defun sql-get-schema-and-table-candidates ()
-  "Get a list of candidates that consists of only
-schema and table names."
+  "Get a list of candidates that consists of only schema and table names."
   (when sql-completion-debugging
     (message "Getting list of schema or table candidates."))
 
@@ -226,12 +245,10 @@ schema and table names."
     cands))
 
 (defun sql-get-database-objects (target)
-  "Get schema, table, or columns matching the 
-target string passed.
+  "Get schema, table, or columns matching the target string passed.
 
-The input string is a schema name, table name,
-or column name \(partial or full\) to search 
-the database for."
+TARGET is the name or partial name of a database object to query the
+database for."
   (save-excursion
     (save-restriction
       (let* ((query (format "SELECT TABSCHEMA || '|' || TABNAME || '|' || COLNAME || '|' || COLNO || '|' || COALESCE(REMARKS, 'NONE') FROM SYSCAT.COLUMNS WHERE TABNAME LIKE '%s%%' OR TABSCHEMA LIKE '%s%%' OR COLNAME LIKE '%s%%' ORDER BY TABSCHEMA, TABNAME, COLNO WITH UR;" target target target))
@@ -250,6 +267,7 @@ the database for."
         
         (with-current-buffer output-buffer
           (widen)
+          (toggle-truncate-lines 1)
           (if (not (sql-buffer-contains-substring "^\\s-*0 record(s)"))
               (progn
                 (goto-char (point-min))
@@ -272,7 +290,7 @@ the database for."
                 ;;  Add each result to the hashmap of completions if
                 ;;  it doesn't exist yet.
                 (cl-loop until (eobp) do
-                         (progn                           
+                         (progn
                            (let* ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
                                   (parts (split-string line "|" split-string-default-separators))
                                   (schema (s-trim (nth 0 parts)))
@@ -327,10 +345,9 @@ the database for."
                            (forward-line 1))))))))))
 
 (defun sql-find-query-tokens ()
-  "Look through the current query for tokens
-that should be queried for in the database.
-Tokens include schema names, table names, and
-column names.  A list of these tokens is
+  "Inspect the current query for tokens that should be resolved in the database.
+
+Tokens include schema names, table names, and column names.  A list of these tokens is
 returned."
   (when sql-completion-debugging
     (message "Starting sql-find-query-tokens."))
@@ -340,6 +357,7 @@ returned."
           (m2)
           (m3)
           (tokens ()))
+      (goto-char (point-min))
       (when (search-forward-regexp "select\\([^\\0]*from\\)\\|select\\([^\\0]*\\)" nil t)
         (let* ((m (or (match-string 1) (match-string 2)))
                (mt (s-trim m)))
@@ -375,16 +393,18 @@ returned."
       tokens)))
 
 (defun sql-buffer-contains-substring (string)
-  "Used to tell if a given string is in the
-current buffer.  Found at:
-http://stackoverflow.com/questions/3034237/check-if-current-emacs-buffer-contains-a-string"
+  "Used to tell if a given string is in the current buffer.
+
+STRING is the string to find in the buffer."
   (save-excursion
     (save-match-data
       (goto-char (point-min))
       (search-forward string nil t))))
 
 (defun sql-search-backward-no-move (target)
-  "Search backward but don't move point."
+  "Search backward but don't move point for the target provided.
+
+TARGET is the string that is to be looked for."
   (save-restriction
     (save-excursion
       (search-backward target nil t))))
