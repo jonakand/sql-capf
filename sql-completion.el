@@ -84,6 +84,18 @@ database to be looked up.")
 (defvar sql-completion-debugging nil
   "Enables debugging messages.")
 
+(defvar sql-find-query-tokens nil
+  "Database specific function for identifying query tokens.
+
+The method should inspect the current query and identify any tokens that
+need to be sent to the database to be resolved.")
+
+(defvar sql-get-database-objects nil
+  "Database specific function for resolving query tokens.
+
+This function should take a string as its only paramter.  The string is
+a target that should be queried for using the current database connection.")
+
 (defun sql-completion-at-point ()
   "Provide completion candidates for the thing at point.
 
@@ -119,14 +131,14 @@ trigger a query to the database again."
         ;;  that need to be run.  To help mitigate slowness
         ;;  only look-up objects that haven't been looked up
         ;;  already and that are longer than four characters.
-        (let ((targets (sql-find-query-tokens)))
+        (let ((targets (funcall 'sql-find-query-tokens)))
           (cl-loop for target in targets do
                    (let ((trg (s-upcase target)))
                      (if (and (> (length trg) sql-completion-min-target-size)
                               (not (-contains-p sql-query-targets trg))
                               (not (gethash trg sql-completions)))
                          (progn
-                           (sql-get-database-objects trg))
+                           (funcall 'sql-get-database-objects trg))
                        (when sql-completion-debugging
                          (message "Skipping candidate lookup: %s" trg))))))
 
@@ -244,7 +256,7 @@ REMARKS is the remarks that were entered in the database for the candidate."
              sql-completions)
     cands))
 
-(defun sql-get-database-objects (target)
+(defun sql-db2-get-database-objects (target)
   "Get schema, table, or columns matching the target string passed.
 
 TARGET is the name or partial name of a database object to query the
@@ -344,13 +356,13 @@ database for."
                                (push column sql-query-targets)))
                            (forward-line 1))))))))))
 
-(defun sql-find-query-tokens ()
+(defun sql-db2-find-query-tokens ()
   "Inspect the current query for tokens that should be resolved in the database.
 
 Tokens include schema names, table names, and column names.  A list of these tokens is
 returned."
   (when sql-completion-debugging
-    (message "Starting sql-find-query-tokens."))
+    (message "Starting sql-db2-find-query-tokens."))
     
   (save-excursion
     (let ((m1)
