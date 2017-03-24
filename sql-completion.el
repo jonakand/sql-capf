@@ -131,14 +131,14 @@ trigger a query to the database again."
         ;;  that need to be run.  To help mitigate slowness
         ;;  only look-up objects that haven't been looked up
         ;;  already and that are longer than four characters.
-        (let ((targets (funcall 'sql-find-query-tokens)))
+        (let ((targets (funcall sql-find-query-tokens)))
           (cl-loop for target in targets do
                    (let ((trg (s-upcase target)))
                      (if (and (> (length trg) sql-completion-min-target-size)
                               (not (-contains-p sql-query-targets trg))
                               (not (gethash trg sql-completions)))
                          (progn
-                           (funcall 'sql-get-database-objects trg))
+                           (funcall sql-get-database-objects trg))
                        (when sql-completion-debugging
                          (message "Skipping candidate lookup: %s" trg))))))
 
