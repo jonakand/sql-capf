@@ -194,7 +194,9 @@ trigger a query to the database again."
   "Return the :note text property for the candidate provided.
 
 CAND is the candidate to return the annotation for."
-  (format "[%s]" (get-text-property 0 :note cand)))
+  (if (get-text-property 0 :note cand)
+      (format "[%s]" (get-text-property 0 :note cand))
+    ""))
 
 (defun sql-completion--metadata (cand)
   "Return the :meta text property for the candidate provided.
@@ -202,13 +204,15 @@ CAND is the candidate to return the annotation for."
 CAND is the candidate to return the metadata for."
   (company-doc-buffer (get-text-property 0 :meta cand)))
 
-(defun sql-propertize-annotation (candidate schema-table database)
+(defun sql-propertize-annotation (candidate database &optional schema-table)
   "Return a propertized text containing the candidate notes.
 
 CANDIDATE is the candidate to add the text property to.
 SCHEMA-TABLE is the schema.table that the candidate was found.
 DATABASE is the database that the candidate was found."
-  (propertize candidate :note (concat database "." schema-table)))
+  (if schema-table
+      (propertize candidate :note (concat database "." schema-table))
+    (propertize candidate :note database)))
 
 (defun sql-propertize-metadata (candidate schema-table database schema table type remarks)
   "Return a propertized text containing the candidate meta data.
@@ -322,19 +326,19 @@ database for."
                              ;;  2.  Schema hash exsist but table is not in value list:
                              ;;      Insert table into schema value list
                              ;;  3.  Schema-table hash exists but doesn't contain the column in the value list:
-                             ;;      Insert column into schema.table value list
+                             ;;      Insert column into schema.table value list                             
                              (when (not (gethash schema sql-completions))
                                  (progn
                                    (puthash schema
-                                            (list (sql-propertize-annotation table schema-table sql-database))
+                                            (list (sql-propertize-annotation table sql-database schema-table))
                                             sql-completions)
-                                   (puthash schema-table
+                                   (puthash (sql-propertize-annotation schema sql-database schema-table)
                                             (list (sql-propertize-metadata column schema-table sql-database schema table type remarks))
                                             sql-completions)))
                              
                              (when (not (-contains-p (gethash schema sql-completions) table))
                                (let ((tables (gethash schema sql-completions)))
-                                 (push (sql-propertize-annotation table schema-table sql-database) tables)
+                                 (push (sql-propertize-annotation table sql-database schema-table) tables)
                                  (puthash schema
                                           tables
                                           sql-completions)))
@@ -342,7 +346,7 @@ database for."
                              (when (not (-contains-p (gethash schema-table sql-completions) column))
                                (let ((cols (gethash schema-table sql-completions)))
                                  (push (sql-propertize-metadata column schema-table sql-database schema table type remarks) cols)
-                                 (puthash schema-table cols sql-completions)))
+                                 (puthash (sql-propertize-annotation schema-table sql-database) cols sql-completions)))
 
                              ;;  This should be fixed.  Currently push the retrieved
                              ;;  values into the list of queries that have been sent
