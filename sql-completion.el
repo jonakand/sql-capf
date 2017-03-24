@@ -236,12 +236,15 @@ REMARKS is the remarks that were entered in the database for the candidate."
   "Get a list of candidates that consists of only table and column names."
   (when sql-completion-debugging
     (message "Getting list of table or column candidates."))
-    
+  
   (let ((cands ()))
     (maphash #'(lambda (key value)
                  (when (s-contains-p "." key)
-                   (progn
-                     (push (second (split-string key "\\.")) cands)
+                   (let ((table (second (split-string key "\\."))))
+                     (propertize table :note (get-text-property 0 :note key))
+                     
+                     (push table cands)
+                     
                      (cl-loop for item in value do
                               (push item cands)))))
              sql-completions)
