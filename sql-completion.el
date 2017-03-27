@@ -411,6 +411,49 @@ returned."
       
       tokens)))
 
+(defun sql-narrow-to-statement ()
+  "Narrow the current buffer to the current SQL statement.
+
+Narrow the buffer to the current SQL statement and leave
+point where it is."
+  (interactive)
+  (let ((point-curr (point))
+        (query-begin)
+        (query-end))
+    (backward-paragraph)
+    (setq query-begin (point))
+
+    (forward-paragraph)
+    (setq query-end (point))
+
+    (narrow-to-region query-begin query-end)
+
+    ;;  Put point back where it was before the query was
+    ;;  isolated.
+    (goto-char point-curr)))
+
+(defun sql-db2-narrow-to-result ()
+  "Narrow the current buffer to a DB2 result, not including headers.
+
+Narrow the current buffer to a DB2 result.  Headers are not included in
+the narrowing.  The line that contains the number of results is also
+not included in the narrowing."
+  (interactive)
+  (goto-char (point-min))
+
+  (search-forward "---------" nil t)
+
+  (next-line)
+  (beginning-of-line)
+
+  (setq c-beg (point))
+
+  (forward-paragraph)
+
+  (setq c-end (1- (point)))
+
+  (narrow-to-region c-beg c-end))
+
 (defun sql-buffer-contains-substring (string)
   "Used to tell if a given string is in the current buffer.
 
