@@ -53,13 +53,8 @@
 ;;  will not trigger a query to the database.
 
 ;;; Todo:
-;;  - Currently two lists are kept one to hold the queries that have already
-;;    been sent to the database to be resolved and another (hashtable) to
-;;    hold the resolved database objects.  It would be nice to have one list.
 ;;  - It would be nice to have the candidates grouped by their location in
-;;    the database.
-;;  - The annotations for schemas are not working correctly.  They are showing
-;;    nil instead of the remarks that were found.
+;;    the database, ie. sorting of the candidates when presented to the user.
 
 ;;; Code:
 
@@ -69,11 +64,6 @@
 (defvar sql-completions (make-hash-table :test 'equal)
   "Hashtable to hold resolved completions.
 DB2 objects.")
-
-(defvar sql-query-targets ()
-  "List of targets that have been searched for.
-This list is maintained so that repeated queries
-for the same database object are avoided.")
 
 (defvar sql-completion-min-target-size 4
   "The minimum size of a database object to queryi for.
@@ -108,87 +98,73 @@ trigger a query to the database again."
   (when sql-completion-debugging
     (message "Starting completion function."))
   
-  (let ((point-curr (point))
-        (query-begin)
-        (query-end))
-    (save-excursion
-      (save-restriction
-        (backward-paragraph)
-        (setq query-begin (point))
+  (save-excursion
+    (save-restriction
+      (sql-narrow-to-statement)
+      
+      ;;  Inspect current query and look for things that
+      ;;  may need to be looked up in the database.  This
+      ;;  could be slow if there are a number of queries
+      ;;  that need to be run.  To help mitigate slowness
+      ;;  only look-up objects that haven't been looked up
+      ;;  already and that are longer than four characters.
+      (let ((targets (funcall sql-find-query-tokens)))
+        (cl-loop for target in targets
+                 for trg = (s-upcase target) do
+                 (if (and (> (length trg) sql-completion-min-target-size)
+                          (not (char-or-string-p (gethash trg sql-completions)))
+                          (not (gethash trg sql-completions)))
+                     (funcall sql-get-database-objects trg)
+                   (when sql-completion-debugging
+                     (message "Skipping candidate lookup: %s" trg)))))
 
-        (forward-paragraph)
-        (setq query-end (point))
-
-        (narrow-to-region query-begin query-end)
-
-        ;;  Put point back where it was before the query was
-        ;;  isolated.
-        (goto-char point-curr)
+      ;;  Need to look back to see what schema/table list
+      ;;  is before the period.
+      (let ((key)
+            (dot-prior nil)
+            (candidates))
         
-        ;;  Inspect current query and look for things that
-        ;;  may need to be looked up in the database.  This
-        ;;  could be slow if there are a number of queries
-        ;;  that need to be run.  To help mitigate slowness
-        ;;  only look-up objects that haven't been looked up
-        ;;  already and that are longer than four characters.
-        (let ((targets (funcall sql-find-query-tokens)))
-          (cl-loop for target in targets do
-                   (let ((trg (s-upcase target)))
-                     (if (and (> (length trg) sql-completion-min-target-size)
-                              (not (-contains-p sql-query-targets trg))
-                              (not (gethash trg sql-completions)))
-                         (progn
-                           (funcall sql-get-database-objects trg))
-                       (when sql-completion-debugging
-                         (message "Skipping candidate lookup: %s" trg))))))
+        ;;  If the char before is a period move backward
+        ;;  to get the word before the period.
+        (if (eq 46 (char-before))
+            ;; (if (looking-back "\\s-+.*\..*")
+            (progn
+              (save-excursion
+                (search-backward "." nil t)
+                (setq dot-prior t)
+                (setq key (s-upcase (thing-at-point 'symbol)))))
+          (setq key (s-upcase (thing-at-point 'symbol))))
 
-        ;;  Need to look back to see what schema/table list
-        ;;  is before the period.
-        (let ((key)
-              (dot-prior nil)
-              (candidates))
-          
-          ;;  If the char before is a period move backward
-          ;;  to get the word before the period.
-          (if (eq 46 (char-before))
-              ;; (if (looking-back "\\s-+.*\..*")
-              (progn
-                (save-excursion
-                  (search-backward "." nil t)
-                  (setq dot-prior t)
-                  (setq key (s-upcase (thing-at-point 'symbol)))))
-            (setq key (s-upcase (thing-at-point 'symbol))))
+        (goto-char (point-max))
+        
+        (cond ((sql-search-backward-no-move "where")
+               (if dot-prior
+                   (setq candidates (gethash key sql-completions)) ;;  completing column name with table as the key.
+                 (setq candidates (sql-get-table-and-column-candidates))))  ;;  General completion
+              ((sql-search-backward-no-move "from")
+               (if dot-prior
+                   (setq candidates (gethash key sql-completions)) ;;  completing table name with schema as the key.
+                 (setq candidates (sql-get-schema-and-table-candidates))))  ;;  General completion
+              ((sql-search-backward-no-move "select")
+               (if dot-prior
+                   (setq candidates (gethash key sql-completions)) ;;  completing column name with table as the key.
+                 (setq candidates (sql-get-table-and-column-candidates)))))  ;;  General completion
 
-          (goto-char (point-max))
-          
-          (cond ((sql-search-backward-no-move "where")
-                 (if dot-prior
-                     (setq candidates (gethash key sql-completions)) ;;  completing column name with table as the key.
-                   (setq candidates (sql-get-table-and-column-candidates))))  ;;  General completion
-                ((sql-search-backward-no-move "from")
-                 (if dot-prior
-                     (setq candidates (gethash key sql-completions)) ;;  completing table name with schema as the key.
-                   (setq candidates (sql-get-schema-and-table-candidates))))  ;;  General completion
-                ((sql-search-backward-no-move "select")
-                 (if dot-prior
-                     (setq candidates (gethash key sql-completions)) ;;  completing column name with table as the key.
-                   (setq candidates (sql-get-table-and-column-candidates)))))  ;;  General completion
-
-          ;;  Candidates have been established, print them for
-          ;;  debudding and then finish completion by returning
-          ;;  the values that capf expects.
-          (when sql-completion-debugging
-            (message "Candidates: %s" candidates))
-          
-          (let ((bounds (bounds-of-thing-at-point 'symbol)))
-            (when bounds
-              (list (car bounds)
-                    (cdr bounds)
-                    candidates
-                    :exclusive 'no
-                    :company-docsig #'identity
-                    :annotation-function #'sql-completion--annotation
-                    :company-doc-buffer #'sql-completion--metadata))))))))
+        ;;  Candidates have been established, print them for
+        ;;  debudding and then finish completion by returning
+        ;;  the values that capf expects.
+        (when sql-completion-debugging
+          (message "Candidates: %s" candidates))
+        
+        (let ((bounds (bounds-of-thing-at-point 'symbol)))
+          (when bounds
+            (list (car bounds)
+                  (cdr bounds)
+                  candidates
+                  :exclusive 'no
+                  :company-docsig #'identity
+                  :annotation-function #'sql-completion--annotation
+                  :company-doc-buffer #'sql-completion--metadata)))))))
 
 (defun sql-completion--annotation (cand)
   "Return the :note text property for the candidate provided.
@@ -239,7 +215,8 @@ REMARKS is the remarks that were entered in the database for the candidate."
   
   (let ((cands ()))
     (maphash #'(lambda (key value)
-                 (when (s-contains-p "." key)
+                 (when (and (not (char-or-string-p value))
+                            (s-contains-p "." key))
                    (let ((table (second (split-string key "\\."))))
                      (propertize table :note (get-text-property 0 :note key))
                      
@@ -257,17 +234,118 @@ REMARKS is the remarks that were entered in the database for the candidate."
 
   (let ((cands ()))
     (maphash #'(lambda (key value)
-                 (if (s-contains-p "." key)
-                     (push (second (split-string key "\\.")) cands)
-                   (push key cands)))
+                 (cond ((and (not (char-or-string-p value))
+                             (s-contains-p "." key))
+                        (push (second (split-string key "\\.")) cands))
+                       ((not (s-blank? value))
+                        (push key cands))))
              sql-completions)
     cands))
+
+;; (defun sql-db2-get-database-objects (target)
+;;   "Get schema, table, or columns matching the target string passed.
+
+;; TARGET is the name or partial name of a database object to query the
+;; database for."
+;;   (save-excursion
+;;     (save-restriction
+;;       (let* ((query (format "SELECT TABSCHEMA || '|' || TABNAME || '|' || COLNAME || '|' || COLNO || '|' || COALESCE(REMARKS, 'NONE') FROM SYSCAT.COLUMNS WHERE TABNAME LIKE '%s%%' OR TABSCHEMA LIKE '%s%%' OR COLNAME LIKE '%s%%' ORDER BY TABSCHEMA, TABNAME, COLNO WITH UR;" target target target))
+;;              (output-buffer "*SQL: OUTPUT*")
+;;              (objects ())
+;;              (c-beg)
+;;              (c-end))
+
+;;         (when sql-completion-debugging
+;;           (message "Sending query: %s" query))
+        
+;;         (sql-redirect (get-buffer sql-buffer)
+;;                       query
+;;                       output-buffer
+;;                       nil)
+        
+;;         (with-current-buffer output-buffer
+;;           (widen)
+;;           (toggle-truncate-lines 1)
+;;           (if (not (sql-buffer-contains-substring "^\\s-*0 record(s)"))
+;;               (progn
+;;                 (goto-char (point-min))
+                
+;;                 (search-forward "---------" nil t)
+
+;;                 (next-line)
+;;                 (beginning-of-line)
+
+;;                 (setq c-beg (point))
+
+;;                 (forward-paragraph)
+
+;;                 (setq c-end (1- (point)))
+
+;;                 (narrow-to-region c-beg c-end)
+;;                 (goto-char (point-min))
+
+;;                 ;;  Loop over narrowed region and process each result.
+;;                 ;;  Add each result to the hashmap of completions if
+;;                 ;;  it doesn't exist yet.
+;;                 (cl-loop until (eobp) do
+;;                          (progn
+;;                            (let* ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+;;                                   (parts (split-string line "|" split-string-default-separators))
+;;                                   (schema (s-trim (nth 0 parts)))
+;;                                   (table (s-trim (nth 1 parts)))
+;;                                   (column (s-trim (nth 2 parts)))
+;;                                   (type (s-trim (nth 3 parts)))
+;;                                   (remarks (s-trim (nth 4 parts)))
+;;                                   (schema-table (concat schema "." table)))
+
+;;                              (when sql-completion-debugging
+;;                                  (message "Processing line: %s" (s-trim line)))
+
+;;                              ;;  Conditions:
+;;                              ;;  1.  Schema hash doesn't exist:
+;;                              ;;      Insert table into schema value list
+;;                              ;;      Insert column into schema.table value list
+;;                              ;;  2.  Schema hash exsist but table is not in value list:
+;;                              ;;      Insert table into schema value list
+;;                              ;;  3.  Schema-table hash exists but doesn't contain the column in the value list:
+;;                              ;;      Insert column into schema.table value list                             
+;;                              (when (not (gethash schema sql-completions))                                 
+;;                                (puthash schema
+;;                                         (list (sql-propertize-annotation table sql-database schema-table))
+;;                                         sql-completions)
+;;                                (puthash (sql-propertize-annotation schema sql-database schema-table)
+;;                                         (list (sql-propertize-metadata column schema-table sql-database schema table type remarks))
+;;                                         sql-completions))
+                             
+;;                              (when (not (-contains-p (gethash schema sql-completions) table))
+;;                                (let ((tables (gethash schema sql-completions)))
+;;                                  (push (sql-propertize-annotation table sql-database schema-table) tables)
+;;                                  (puthash schema
+;;                                           tables
+;;                                           sql-completions)))
+                             
+;;                              (when (not (-contains-p (gethash schema-table sql-completions) column))
+;;                                (let ((cols (gethash schema-table sql-completions)))
+;;                                  (push (sql-propertize-metadata column schema-table sql-database schema table type remarks) cols)
+;;                                  (puthash (sql-propertize-annotation schema-table sql-database) cols sql-completions)))
+
+;;                              ;;  This should be fixed.  Currently push the retrieved
+;;                              ;;  values into the list of queries that have been sent
+;;                              ;;  to the database so that it will not be sent again a
+;;                              ;;  second time.
+;;                              (when (not (-contains-p sql-query-targets schema))
+;;                                (push schema sql-query-targets))
+;;                              (when (not (-contains-p sql-query-targets table))
+;;                                (push table sql-query-targets))
+;;                              (when (not (-contains-p sql-query-targets column))
+;;                                (push column sql-query-targets)))
+;;                            (forward-line 1))))))))))
 
 (defun sql-db2-get-database-objects (target)
   "Get schema, table, or columns matching the target string passed.
 
-TARGET is the name or partial name of a database object to query the
-database for."
+TARGET is the name or partial name of a database object to query the database for."
+  (interactive)
   (save-excursion
     (save-restriction
       (let* ((query (format "SELECT TABSCHEMA || '|' || TABNAME || '|' || COLNAME || '|' || COLNO || '|' || COALESCE(REMARKS, 'NONE') FROM SYSCAT.COLUMNS WHERE TABNAME LIKE '%s%%' OR TABSCHEMA LIKE '%s%%' OR COLNAME LIKE '%s%%' ORDER BY TABSCHEMA, TABNAME, COLNO WITH UR;" target target target))
@@ -278,90 +356,74 @@ database for."
 
         (when sql-completion-debugging
           (message "Sending query: %s" query))
-        
+
         (sql-redirect (get-buffer sql-buffer)
                       query
                       output-buffer
                       nil)
-        
+
         (with-current-buffer output-buffer
           (widen)
           (toggle-truncate-lines 1)
-          (if (not (sql-buffer-contains-substring "^\\s-*0 record(s)"))
-              (progn
-                (goto-char (point-min))
-                
-                (search-forward "---------" nil t)
 
-                (next-line)
-                (beginning-of-line)
+          (if (sql-buffer-contains-substring "^\\s-*0 record(s)")
+              (puthash target "" sql-completions)
+            (sql-db2-narrow-to-result)
+            
+            (goto-char (point-min))
 
-                (setq c-beg (point))
+            ;;  Loop over narrowed region and process each result.
+            ;;  Add each result to the hashmap of completions if
+            ;;  it doesn't exist yet.
+            (cl-loop for line = (buffer-substring-no-properties (line-beginning-position) (line-end-position))
+                     for parts = (split-string line "|" split-string-default-separators)
+                     for schema = (s-trim (nth 0 parts))
+                     for table = (s-trim (nth 1 parts))
+                     for column = (s-trim (nth 2 parts))
+                     for type = (s-trim (nth 3 parts))
+                     for remarks = (s-trim (nth 4 parts))
+                     for schema-table = (concat schema "." table)
+                     until (eobp) do
 
-                (forward-paragraph)
+                     (when sql-completion-debugging
+                       (message "Processing line: %s" (s-trim line)))
 
-                (setq c-end (1- (point)))
+                     ;;  Conditions:
+                     ;;  1.  Schema hash doesn't exist:
+                     ;;      Insert table into schema value list
+                     ;;      Insert column into schema.table value list
+                     ;;  2.  Schema hash exsist but table is not in value list:
+                     ;;      Insert table into schema value list
+                     ;;  3.  Schema-table hash exists but doesn't contain the column in the value list:
+                     ;;      Insert column into schema.table value list
+                     ;;  4.  Table hash doesn't exist:
+                     ;;      Insert dummy hash for table.
+                     (when (not (gethash schema sql-completions))
+                       (puthash schema
+                                (list (sql-propertize-annotation table sql-database schema-table))
+                                sql-completions)
+                       (puthash (sql-propertize-annotation schema sql-database schema-table)
+                                (list (sql-propertize-metadata column schema-table sql-database schema table type remarks))
+                                sql-completions))
 
-                (narrow-to-region c-beg c-end)
-                (goto-char (point-min))
+                     (when (not (-contains-p (gethash schema sql-completions) table))
+                       (let ((tables (gethash schema sql-completions)))
+                         (push (sql-propertize-annotation table sql-database schema-table) tables)
+                         (puthash schema
+                                  tables
+                                  sql-completions)))
 
-                ;;  Loop over narrowed region and process each result.
-                ;;  Add each result to the hashmap of completions if
-                ;;  it doesn't exist yet.
-                (cl-loop until (eobp) do
-                         (progn
-                           (let* ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
-                                  (parts (split-string line "|" split-string-default-separators))
-                                  (schema (s-trim (nth 0 parts)))
-                                  (table (s-trim (nth 1 parts)))
-                                  (column (s-trim (nth 2 parts)))
-                                  (type (s-trim (nth 3 parts)))
-                                  (remarks (s-trim (nth 4 parts)))
-                                  (schema-table (concat schema "." table)))
+                     (when (not (-contains-p (gethash schema-table sql-completions) column))
+                       (let ((cols (gethash schema-table sql-completions)))
+                         (push (sql-propertize-metadata column schema-table sql-database schema table type remarks) cols)
+                         (puthash (sql-propertize-annotation schema-table sql-database) cols sql-completions)))
 
-                             (when sql-completion-debugging
-                                 (message "Processing line: %s" (s-trim line)))
+                     (when (not (gethash table sql-completions))
+                       (puthash table "" sql-completions))
 
-                             ;;  Conditions:
-                             ;;  1.  Schema hash doesn't exist:
-                             ;;      Insert table into schema value list
-                             ;;      Insert column into schema.table value list
-                             ;;  2.  Schema hash exsist but table is not in value list:
-                             ;;      Insert table into schema value list
-                             ;;  3.  Schema-table hash exists but doesn't contain the column in the value list:
-                             ;;      Insert column into schema.table value list                             
-                             (when (not (gethash schema sql-completions))
-                                 (progn
-                                   (puthash schema
-                                            (list (sql-propertize-annotation table sql-database schema-table))
-                                            sql-completions)
-                                   (puthash (sql-propertize-annotation schema sql-database schema-table)
-                                            (list (sql-propertize-metadata column schema-table sql-database schema table type remarks))
-                                            sql-completions)))
-                             
-                             (when (not (-contains-p (gethash schema sql-completions) table))
-                               (let ((tables (gethash schema sql-completions)))
-                                 (push (sql-propertize-annotation table sql-database schema-table) tables)
-                                 (puthash schema
-                                          tables
-                                          sql-completions)))
-                             
-                             (when (not (-contains-p (gethash schema-table sql-completions) column))
-                               (let ((cols (gethash schema-table sql-completions)))
-                                 (push (sql-propertize-metadata column schema-table sql-database schema table type remarks) cols)
-                                 (puthash (sql-propertize-annotation schema-table sql-database) cols sql-completions)))
-
-                             ;;  This should be fixed.  Currently push the retrieved
-                             ;;  values into the list of queries that have been sent
-                             ;;  to the database so that it will not be sent again a
-                             ;;  second time.
-                             (when (not (-contains-p sql-query-targets schema))
-                               (push schema sql-query-targets))
-                             (when (not (-contains-p sql-query-targets table))
-                               (push table sql-query-targets))
-                             (when (not (-contains-p sql-query-targets column))
-                               (push column sql-query-targets)))
-                           (forward-line 1))))))))))
+                     (when (not (gethash column sql-completions))
+                       (puthash column "" sql-completions))
+                     (forward-line 1))))))))
 
 (defun sql-db2-find-query-tokens ()
   "Inspect the current query for tokens that should be resolved in the database.
@@ -461,7 +523,7 @@ STRING is the string to find in the buffer."
   (save-excursion
     (save-match-data
       (goto-char (point-min))
-      (search-forward string nil t))))
+      (search-forward-regexp string nil t))))
 
 (defun sql-search-backward-no-move (target)
   "Search backward but don't move point for the target provided.
