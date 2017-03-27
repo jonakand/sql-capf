@@ -210,136 +210,39 @@ REMARKS is the remarks that were entered in the database for the candidate."
 
 (defun sql-get-table-and-column-candidates ()
   "Get a list of candidates that consists of only table and column names."
+
   (when sql-completion-debugging
     (message "Getting list of table or column candidates."))
-  
-  (let ((cands ()))
-    (maphash #'(lambda (key value)
-                 (when (and (not (char-or-string-p value))
-                            (s-contains-p "." key))
-                   (let ((table (second (split-string key "\\."))))
-                     (propertize table :note (get-text-property 0 :note key))
-                     
-                     (push table cands)
-                     
-                     (cl-loop for item in value do
-                              (push item cands)))))
-             sql-completions)
-    cands))
 
+  (cl-loop for key being the hash-keys of sql-completions
+           using (hash-values value)
+           with cands do
+           (when (and (not (char-or-string-p value))
+                      (s-contains-p "." key))
+             (let ((table (second (split-string key "\\."))))
+               (propertize table :note (get-text-property 0 :note key))
+                     
+               (push table cands)
+                     
+               (cl-loop for item in value do
+                        (push item cands))))
+           finally return cands))
+  
 (defun sql-get-schema-and-table-candidates ()
   "Get a list of candidates that consists of only schema and table names."
+
   (when sql-completion-debugging
     (message "Getting list of schema or table candidates."))
 
-  (let ((cands ()))
-    (maphash #'(lambda (key value)
-                 (cond ((and (not (char-or-string-p value))
-                             (s-contains-p "." key))
-                        (push (second (split-string key "\\.")) cands))
-                       ((not (s-blank? value))
-                        (push key cands))))
-             sql-completions)
-    cands))
-
-;; (defun sql-db2-get-database-objects (target)
-;;   "Get schema, table, or columns matching the target string passed.
-
-;; TARGET is the name or partial name of a database object to query the
-;; database for."
-;;   (save-excursion
-;;     (save-restriction
-;;       (let* ((query (format "SELECT TABSCHEMA || '|' || TABNAME || '|' || COLNAME || '|' || COLNO || '|' || COALESCE(REMARKS, 'NONE') FROM SYSCAT.COLUMNS WHERE TABNAME LIKE '%s%%' OR TABSCHEMA LIKE '%s%%' OR COLNAME LIKE '%s%%' ORDER BY TABSCHEMA, TABNAME, COLNO WITH UR;" target target target))
-;;              (output-buffer "*SQL: OUTPUT*")
-;;              (objects ())
-;;              (c-beg)
-;;              (c-end))
-
-;;         (when sql-completion-debugging
-;;           (message "Sending query: %s" query))
-        
-;;         (sql-redirect (get-buffer sql-buffer)
-;;                       query
-;;                       output-buffer
-;;                       nil)
-        
-;;         (with-current-buffer output-buffer
-;;           (widen)
-;;           (toggle-truncate-lines 1)
-;;           (if (not (sql-buffer-contains-substring "^\\s-*0 record(s)"))
-;;               (progn
-;;                 (goto-char (point-min))
-                
-;;                 (search-forward "---------" nil t)
-
-;;                 (next-line)
-;;                 (beginning-of-line)
-
-;;                 (setq c-beg (point))
-
-;;                 (forward-paragraph)
-
-;;                 (setq c-end (1- (point)))
-
-;;                 (narrow-to-region c-beg c-end)
-;;                 (goto-char (point-min))
-
-;;                 ;;  Loop over narrowed region and process each result.
-;;                 ;;  Add each result to the hashmap of completions if
-;;                 ;;  it doesn't exist yet.
-;;                 (cl-loop until (eobp) do
-;;                          (progn
-;;                            (let* ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
-;;                                   (parts (split-string line "|" split-string-default-separators))
-;;                                   (schema (s-trim (nth 0 parts)))
-;;                                   (table (s-trim (nth 1 parts)))
-;;                                   (column (s-trim (nth 2 parts)))
-;;                                   (type (s-trim (nth 3 parts)))
-;;                                   (remarks (s-trim (nth 4 parts)))
-;;                                   (schema-table (concat schema "." table)))
-
-;;                              (when sql-completion-debugging
-;;                                  (message "Processing line: %s" (s-trim line)))
-
-;;                              ;;  Conditions:
-;;                              ;;  1.  Schema hash doesn't exist:
-;;                              ;;      Insert table into schema value list
-;;                              ;;      Insert column into schema.table value list
-;;                              ;;  2.  Schema hash exsist but table is not in value list:
-;;                              ;;      Insert table into schema value list
-;;                              ;;  3.  Schema-table hash exists but doesn't contain the column in the value list:
-;;                              ;;      Insert column into schema.table value list                             
-;;                              (when (not (gethash schema sql-completions))                                 
-;;                                (puthash schema
-;;                                         (list (sql-propertize-annotation table sql-database schema-table))
-;;                                         sql-completions)
-;;                                (puthash (sql-propertize-annotation schema sql-database schema-table)
-;;                                         (list (sql-propertize-metadata column schema-table sql-database schema table type remarks))
-;;                                         sql-completions))
-                             
-;;                              (when (not (-contains-p (gethash schema sql-completions) table))
-;;                                (let ((tables (gethash schema sql-completions)))
-;;                                  (push (sql-propertize-annotation table sql-database schema-table) tables)
-;;                                  (puthash schema
-;;                                           tables
-;;                                           sql-completions)))
-                             
-;;                              (when (not (-contains-p (gethash schema-table sql-completions) column))
-;;                                (let ((cols (gethash schema-table sql-completions)))
-;;                                  (push (sql-propertize-metadata column schema-table sql-database schema table type remarks) cols)
-;;                                  (puthash (sql-propertize-annotation schema-table sql-database) cols sql-completions)))
-
-;;                              ;;  This should be fixed.  Currently push the retrieved
-;;                              ;;  values into the list of queries that have been sent
-;;                              ;;  to the database so that it will not be sent again a
-;;                              ;;  second time.
-;;                              (when (not (-contains-p sql-query-targets schema))
-;;                                (push schema sql-query-targets))
-;;                              (when (not (-contains-p sql-query-targets table))
-;;                                (push table sql-query-targets))
-;;                              (when (not (-contains-p sql-query-targets column))
-;;                                (push column sql-query-targets)))
-;;                            (forward-line 1))))))))))
+  (cl-loop for key being the hash-keys of sql-completions
+           using (hash-values value)
+           with cands do
+           (cond ((and (not (char-or-string-p value))
+                       (s-contains-p "." key))
+                  (push (second (split-string key "\\.")) cands))
+                 ((not (s-blank? value))
+                  (push key cands)))
+           finally return cands))
 
 (defun sql-db2-get-database-objects (target)
   "Get schema, table, or columns matching the target string passed.
