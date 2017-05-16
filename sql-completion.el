@@ -244,6 +244,44 @@ REMARKS is the remarks that were entered in the database for the candidate."
                   (push key cands)))
            finally return cands))
 
+(defun sql-narrow-to-statement ()
+  "Narrow the current buffer to the current SQL statement.
+
+Narrow the buffer to the current SQL statement and leave
+point where it is."
+  (interactive)
+  (let ((point-curr (point))
+        (query-begin)
+        (query-end))
+    (backward-paragraph)
+    (setq query-begin (point))
+
+    (forward-paragraph)
+    (setq query-end (point))
+
+    (narrow-to-region query-begin query-end)
+
+    ;;  Put point back where it was before the query was
+    ;;  isolated.
+    (goto-char point-curr)))
+
+(defun sql-buffer-contains-substring (string)
+  "Used to tell if a given string is in the current buffer.
+
+STRING is the string to find in the buffer."
+  (save-excursion
+    (save-match-data
+      (goto-char (point-min))
+      (search-forward-regexp string nil t))))
+
+(defun sql-search-backward-no-move (target)
+  "Search backward but don't move point for the target provided.
+
+TARGET is the string that is to be looked for."
+  (save-restriction
+    (save-excursion
+      (search-backward target nil t))))
+
 (defun sql-db2-get-database-objects (target)
   "Get schema, table, or columns matching the target string passed.
 
