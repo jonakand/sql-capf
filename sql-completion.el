@@ -108,15 +108,14 @@ trigger a query to the database again."
       ;;  that need to be run.  To help mitigate slowness
       ;;  only look-up objects that haven't been looked up
       ;;  already and that are longer than four characters.
-      (let ((targets (funcall sql-find-query-tokens)))
-        (cl-loop for target in targets
-                 for trg = (s-upcase target) do
-                 (if (and (> (length trg) sql-completion-min-target-size)
-                          (not (char-or-string-p (gethash trg sql-completions)))
-                          (not (gethash trg sql-completions)))
-                     (funcall sql-get-database-objects trg)
-                   (when sql-completion-debugging
-                     (message "Skipping candidate lookup: %s" trg)))))
+      (cl-loop for target in (funcall sql-find-query-tokens)
+               for trg = (s-upcase target) do
+               (if (and (> (length trg) sql-completion-min-target-size)
+                        (not (char-or-string-p (gethash trg sql-completions)))
+                        (not (gethash trg sql-completions)))
+                   (funcall sql-get-database-objects trg)
+                 (when sql-completion-debugging
+                   (message "Skipping candidate lookup: %s" trg))))
 
       ;;  Need to look back to see what schema/table list
       ;;  is before the period.
@@ -216,16 +215,17 @@ REMARKS is the remarks that were entered in the database for the candidate."
 
   (cl-loop for key being the hash-keys of sql-completions
            using (hash-values value)
-           with cands do
-           (when (and (not (char-or-string-p value))
-                      (s-contains-p "." key))
-             (let ((table (second (split-string key "\\."))))
-               (propertize table :note (get-text-property 0 :note key))
-                     
-               (push table cands)
-                     
-               (cl-loop for item in value do
-                        (push item cands))))
+           with cands
+           when (and (not (char-or-string-p value))
+                     (s-contains-p "." key))
+           do
+           (let ((table (second (split-string key "\\."))))
+             (propertize table :note (get-text-property 0 :note key))
+             
+             (push table cands)
+             
+             (cl-loop for item in value do
+                      (push item cands)))
            finally return cands))
   
 (defun sql-get-schema-and-table-candidates ()
@@ -350,9 +350,10 @@ returned."
                  (backward-word))
                 (t
                  (setq m1 mt)))
-          (cl-loop for item in (split-string m1 "[,\. ]") do
-                   (when (not (-contains-p tokens (s-trim item)))
-                     (push (s-trim item) tokens)))))
+          (cl-loop for item in (split-string m1 "[,\. ]") 
+                   when (not (-contains-p tokens (s-trim item)))
+                   do
+                   (push (s-trim item) tokens))))
       (when (and m1 (search-forward-regexp "from\\([^\\0]*where\\)\\|from\\([^\\0]*\\)" nil t))
         (let* ((m (or (match-string 1) (match-string 2)))
               (mt (s-trim m)))
@@ -361,41 +362,61 @@ returned."
                  (backward-word))
                 (t
                  (setq m2 mt)))
-          (cl-loop for item in (split-string m2 "[,\. ]") do
-                   (when (not (-contains-p tokens (s-trim item)))
-                     (push (s-trim item) tokens)))))
+          (cl-loop for item in (split-string m2 "[,\. ]")
+                   when (not (-contains-p tokens (s-trim item)))
+                   do
+                   (push (s-trim item) tokens))))
       (when (search-forward-regexp "where\\([^\\0]*\\)" nil t)
        (let ((mt (s-trim (match-string 1))))
           (setq m3 (replace-regexp-in-string "\n" "" mt))
-          (cl-loop for item in (split-string m3 "[,\. ]") do
-                   (when (not (-contains-p tokens item))
-                     (push item tokens)))))
+          (cl-loop for item in (split-string m3 "[,\. ]")
+                   when (not (-contains-p tokens item))
+                   do
+                   (push item tokens))))
 
       (when sql-completion-debugging
         (message "Found potential objects to lookup: %s" tokens))
       
       tokens)))
 
-(defun sql-narrow-to-statement ()
-  "Narrow the current buffer to the current SQL statement.
+;; (defun sql-db2-find-query-tokens ()
+;;   "Inspect the current query for tokens that should be resolved in the database.
 
-Narrow the buffer to the current SQL statement and leave
-point where it is."
-  (interactive)
-  (let ((point-curr (point))
-        (query-begin)
-        (query-end))
-    (backward-paragraph)
-    (setq query-begin (point))
+;; Tokens include schema names, table names, and column names.  A list of these tokens is
+;; returned."
+;;   (when sql-completion-debugging
+;;     (message "Starting sql-db2-find-query-tokens."))
+    
+;;   (save-excursion
+;;     (let ((tokens ()))
+;;       (goto-char (point-min))
+;;       (when (search-forward-regexp "select\\([^\\0]*from\\)\\|select\\([^\\0]*\\)" nil t)
+;;         (let* ((m (or (match-string 1) (match-string 2)))
+;;                (mt (s-trim m)))
+;;           (cond ((match-string 1)
+;;                  (backward-word)           
+;;                  (setq tokens (append (split-string (substring mt 0 (- (length mt) 4))) tokens)))
+;;                 (t
+;;                  (setq tokens (append (split-string mt) tokens))))))
+;;       (when (search-forward-regexp "from\\([^\\0]*where\\)\\|from\\([^\\0]*\\)" nil t)
+;;         (let* ((m (or (match-string 1) (match-string 2)))
+;;               (mt (s-trim m)))
+;;           (cond ((match-string 1)
+;;                  (setq tokens (append (split-string (substring mt 0 (- (length mt) 5))) tokens))
+;;                  (backward-word))
+;;                 (t
+;;                  (setq tokens (append (split-string mt) tokens))))))
+;;       (when (search-forward-regexp "where\\([^\\0]*\\)" nil t)
+;;        (let ((mt (s-trim (match-string 1))))
+;;          (setq tokens (append (split-string mt) tokens))))
 
-    (forward-paragraph)
-    (setq query-end (point))
-
-    (narrow-to-region query-begin query-end)
-
-    ;;  Put point back where it was before the query was
-    ;;  isolated.
-    (goto-char point-curr)))
+;;       (cl-loop for i in tokens
+;;                collect (split-string i "[,\. ]"))
+      
+;;       ;; (when sql-completion-debugging
+;;       ;;   (message "Found potential objects to lookup: %s" tokens))
+;;       ;; tokens
+;;       )))
 
 (defun sql-db2-narrow-to-result ()
   "Narrow the current buffer to a DB2 result, not including headers.
