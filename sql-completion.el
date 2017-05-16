@@ -289,7 +289,7 @@ TARGET is the name or partial name of a database object to query the database fo
   (interactive)
   (save-excursion
     (save-restriction
-      (let* ((query (format "SELECT TABSCHEMA || '|' || TABNAME || '|' || COLNAME || '|' || COLNO || '|' || COALESCE(REMARKS, 'NONE') FROM SYSCAT.COLUMNS WHERE TABNAME LIKE '%s%%' OR TABSCHEMA LIKE '%s%%' OR COLNAME LIKE '%s%%' ORDER BY TABSCHEMA, TABNAME, COLNO WITH UR;" target target target))
+      (let* ((query (format "SELECT TABSCHEMA || '|' || TABNAME || '|' || COLNAME || '|' || COLNO || '|' || COALESCE(REMARKS, 'NONE') FROM SYSCAT.COLUMNS WHERE TABNAME LIKE '%s%%' OR TABSCHEMA LIKE '%s%%' ORDER BY TABSCHEMA, TABNAME, COLNO WITH UR;" target target))
              (output-buffer "*SQL: OUTPUT*")
              (objects ())
              (c-beg)
@@ -477,23 +477,6 @@ not included in the narrowing."
   (setq c-end (1- (point)))
 
   (narrow-to-region c-beg c-end))
-
-(defun sql-buffer-contains-substring (string)
-  "Used to tell if a given string is in the current buffer.
-
-STRING is the string to find in the buffer."
-  (save-excursion
-    (save-match-data
-      (goto-char (point-min))
-      (search-forward-regexp string nil t))))
-
-(defun sql-search-backward-no-move (target)
-  "Search backward but don't move point for the target provided.
-
-TARGET is the string that is to be looked for."
-  (save-restriction
-    (save-excursion
-      (search-backward target nil t))))
 
 (provide 'sql-completion)
 ;;; sql-completion.el ends here
