@@ -289,7 +289,7 @@ TARGET is the name or partial name of a database object to query the database fo
   (interactive)
   (save-excursion
     (save-restriction
-      (let* ((query (format "SELECT TABSCHEMA || '|' || TABNAME || '|' || COLNAME || '|' || COLNO || '|' || COALESCE(REMARKS, 'NONE') FROM SYSCAT.COLUMNS WHERE TABNAME LIKE '%s%%' OR TABSCHEMA LIKE '%s%%' ORDER BY TABSCHEMA, TABNAME, COLNO WITH UR;" target target))
+      (let* ((query (format "SELECT TABSCHEMA || '|' || TABNAME || '|' || COLNAME || '|' || COLNO || '|' || COALESCE(REMARKS, 'NONE') FROM SYSCAT.COLUMNS WHERE TABNAME LIKE '%s%%' OR TABSCHEMA LIKE '%s%%' OR COLNAME LIKE '%s%%' ORDER BY TABSCHEMA, TABNAME, COLNO WITH UR;" target target target))
              (output-buffer "*SQL: OUTPUT*")
              (objects ())
              (c-beg)
