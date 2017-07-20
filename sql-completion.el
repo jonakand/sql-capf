@@ -66,7 +66,7 @@
 DB2 objects.")
 
 (defvar sql-completion-min-target-size 4
-  "The minimum size of a database object to queryi for.
+  "The minimum size of a database object to query for.
 If the potential database object has a name
 less than this length it will not be sent to the
 database to be looked up.")
@@ -183,8 +183,8 @@ CAND is the candidate to return the metadata for."
   "Return a propertized text containing the candidate notes.
 
 CANDIDATE is the candidate to add the text property to.
-SCHEMA-TABLE is the schema.table that the candidate was found.
-DATABASE is the database that the candidate was found."
+DATABASE is the database that the candidate was found.
+SCHEMA-TABLE is the schema.table that the candidate was found."
   (if schema-table
       (propertize candidate :note (concat database "." schema-table))
     (propertize candidate :note database)))
